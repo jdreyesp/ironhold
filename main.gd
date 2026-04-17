@@ -542,7 +542,7 @@ func _process_squads(delta):
 					match u.state:
 						"combat", "approach": has_combat   = true
 						"moving":             has_moving   = true
-						"idle":
+						"idle", "settling":
 							if u.home != sq.target_node:
 								has_idle_mid = true
 
@@ -552,7 +552,7 @@ func _process_squads(delta):
 					pass
 				elif has_idle_mid:
 					for u in sq.units:
-						if u.state != "dead":
+						if u.state != "dead" and u.state != "settling":
 							_unit_start_move_to(u, sq.target_node)
 				else:
 					sq.home = sq.target_node
@@ -573,8 +573,9 @@ func _process_squads(delta):
 						var placed: Array = []
 						for u in sq.units:
 							if u.state != "dead":
-								u.pos = _find_free_position(sq.home.pos, placed)
-								placed.append(u)
+								var rest = _find_free_position(sq.home.pos, placed)
+								placed.append({"pos": rest, "state": "idle"})
+								_unit_walk_to_pos(u, rest)
 
 	for sq in dead_squads:
 		squads.erase(sq)
@@ -702,6 +703,19 @@ func _process_units(delta):
 							u.combat_target.state = "dead"
 							u.combat_target = null
 
+			"settling":
+				var to_dest = u.move_dest - u.pos
+				var dist    = to_dest.length()
+				var step    = _unit_move_speed(u) * delta * 0.6
+				if dist <= step:
+					u.pos   = u.move_dest
+					u.state = "idle"
+				else:
+					u.pos += to_dest.normalized() * step
+					var spotted = _enemies_in_radius(u, ALERT_RADIUS)
+					if spotted.size() > 0:
+						_start_approach(u, _pick_engagement_target(u, spotted))
+
 			"dead":
 				_release_engagement(u)
 				u.death_alpha -= delta * 1.5
@@ -729,7 +743,7 @@ func _project_to_segment(p: Vector2, a: Vector2, b: Vector2) -> Vector2:
 func _unit_start_move_to(u: Dictionary, target: Dictionary):
 	_release_engagement(u)
 	u.state           = "moving"
-	u.from_pos        = _project_to_segment(u.pos, u.pos, target.pos)
+	u.from_pos        = u.pos
 	u.target_node     = target
 	u.move_progress   = 0.0
 	u.combat_target   = null
@@ -752,6 +766,13 @@ func _unit_start_move_to(u: Dictionary, target: Dictionary):
 	else:
 		u.formation_offset = Vector2.ZERO
 	u.move_dest = target.pos + u.formation_offset
+
+func _unit_walk_to_pos(u: Dictionary, dest: Vector2):
+	_release_engagement(u)
+	u.state           = "settling"
+	u.move_dest       = dest
+	u.combat_target   = null
+	u.approach_target = null
 
 func _enemy_of(race: String) -> String:
 	if race == PLAYER_RACE: return AI_RACE
