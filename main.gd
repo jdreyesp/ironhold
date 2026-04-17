@@ -662,12 +662,7 @@ func _process_node_capture(delta):
 			continue
 
 		if not humans_here and not orcs_here:
-			if n.capture_progress > 0.0 and n.capture_owner != n.capturing_race:
-				n.capture_progress = maxf(0.0, n.capture_progress - delta / CAPTURE_REVERSE)
-				if n.capture_progress <= 0.0:
-					n.capture_owner  = ""
-					n.capturing_race = ""
-			elif n.capture_progress > 0.0 and n.capture_owner == n.capturing_race and n.capture_owner != "":
+			if n.capture_progress > 0.0 and n.capture_progress < 1.0 and n.capture_owner != n.capturing_race:
 				n.capture_progress = maxf(0.0, n.capture_progress - delta / CAPTURE_REVERSE)
 				if n.capture_progress <= 0.0:
 					n.capture_owner  = ""
