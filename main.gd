@@ -662,25 +662,33 @@ func _process_node_capture(delta):
 			continue
 
 		if not humans_here and not orcs_here:
+			if n.capture_progress > 0.0 and n.capture_owner != n.capturing_race:
+				n.capture_progress = maxf(0.0, n.capture_progress - delta / CAPTURE_REVERSE)
+				if n.capture_progress <= 0.0:
+					n.capture_owner  = ""
+					n.capturing_race = ""
+			elif n.capture_progress > 0.0 and n.capture_owner == n.capturing_race and n.capture_owner != "":
+				n.capture_progress = maxf(0.0, n.capture_progress - delta / CAPTURE_REVERSE)
+				if n.capture_progress <= 0.0:
+					n.capture_owner  = ""
+					n.capturing_race = ""
 			continue
 
 		var attacker = PLAYER_RACE if humans_here else AI_RACE
 
-		if n.capture_owner == attacker:
+		if n.capture_owner == attacker and n.capture_progress >= 1.0:
 			continue
 
-		if n.capturing_race != attacker:
+		if n.capture_progress > 0.0 and n.capturing_race != "" and n.capturing_race != attacker:
+			n.capture_progress = maxf(0.0, n.capture_progress - delta / CAPTURE_REVERSE)
+			if n.capture_progress <= 0.0:
+				n.capture_owner  = ""
+				n.capturing_race = attacker
+		else:
 			n.capturing_race = attacker
-
-		if n.capture_owner == "" or n.capture_owner == attacker:
 			n.capture_progress = minf(1.0, n.capture_progress + delta / CAPTURE_TIME)
 			if n.capture_progress >= 1.0:
 				n.capture_owner = attacker
-		else:
-			n.capture_progress = maxf(0.0, n.capture_progress - delta / CAPTURE_REVERSE)
-			if n.capture_progress <= 0.0:
-				n.capture_owner    = ""
-				n.capturing_race   = attacker
 
 # ── unit processing ───────────────────────────────────────────────────────────
 func _process_units(delta):
@@ -1455,8 +1463,9 @@ func draw_game_node(n: Dictionary):
 		else Color(0.5, 0.5, 0.42, alpha))
 	draw_arc(p, NODE_RADIUS - 3, 0, TAU, 48, ring_col, 5)
 
-	if n.capturing_race != "" and n.capture_progress > 0.0 and n.capture_progress < 1.0:
-		var arc_col = Color(0.3, 0.65, 0.3, alpha) if n.capturing_race == PLAYER_RACE \
+	if n.capture_progress > 0.0 and n.capture_progress < 1.0:
+		var arc_race = n.capture_owner if n.capture_owner != "" else n.capturing_race
+		var arc_col = Color(0.3, 0.65, 0.3, alpha) if arc_race == PLAYER_RACE \
 			else Color(0.65, 0.25, 0.15, alpha)
 		draw_arc(p, NODE_RADIUS + 12, -PI * 0.5,
 			-PI * 0.5 + TAU * n.capture_progress, 48, arc_col, 6)
