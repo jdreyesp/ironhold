@@ -556,6 +556,7 @@ func _process_squads(delta):
 					var placed: Array = []
 					for u in sq.units:
 						if u.state == "dead": continue
+						u.home = sq.target_node
 						var regroup_dest = _find_free_position(center, placed)
 						placed.append({"pos": regroup_dest, "state": "idle"})
 						_unit_walk_to_pos(u, regroup_dest)
@@ -586,14 +587,28 @@ func _process_squads(delta):
 				var all_settled = true
 				for u in sq.units:
 					if u.state == "dead": continue
-					if u.state == "settling" or u.state == "moving":
-						all_settled = false
-						break
-					if u.state == "combat" or u.state == "approach":
+					if u.state != "idle":
 						all_settled = false
 						break
 				if all_settled:
-					sq.state = "moving"
+					sq.home = sq.target_node
+					if sq.path.size() > 0:
+						var next_idx = sq.path.pop_front()
+						sq.target_node = game_nodes[next_idx]
+						sq.state = "moving"
+						for u in sq.units:
+							if u.state != "dead":
+								_unit_start_move_to(u, sq.target_node)
+					else:
+						sq.state = "idle"
+						sq.target_node = null
+						sq.final_node  = null
+						var placed: Array = []
+						for u in sq.units:
+							if u.state != "dead":
+								var rest = _find_free_position(sq.home.pos, placed)
+								placed.append({"pos": rest, "state": "idle"})
+								_unit_walk_to_pos(u, rest)
 
 	for sq in dead_squads:
 		squads.erase(sq)
