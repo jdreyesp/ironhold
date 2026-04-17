@@ -552,10 +552,11 @@ func _process_squads(delta):
 					pass
 				elif has_idle_mid:
 					sq.state = "regrouping"
+					var center = _squad_centroid(sq)
 					var placed: Array = []
 					for u in sq.units:
 						if u.state == "dead": continue
-						var regroup_dest = _find_free_position(sq.home.pos, placed)
+						var regroup_dest = _find_free_position(center, placed)
 						placed.append({"pos": regroup_dest, "state": "idle"})
 						_unit_walk_to_pos(u, regroup_dest)
 				else:
