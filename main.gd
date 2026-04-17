@@ -83,6 +83,9 @@ func _generate_nodes():
 		_place_node(p, label, "neutral", used)
 	_place_node(Vector2(randf_range(WORLD_W * 0.75, WORLD_W - margin), randf_range(margin, WORLD_H - margin)),
 		"Guarida", AI_RACE, used)
+	for n in game_nodes:
+		if n.owner == "neutral":
+			_generate_clearing(n)
 
 func _place_node(pos: Vector2, label: String, owner_race: String, used: Array):
 	game_nodes.append({
@@ -91,6 +94,10 @@ func _place_node(pos: Vector2, label: String, owner_race: String, used: Array):
 		"capture_progress": 1.0 if owner_race != "neutral" else 0.0,
 		"capturing_race":   owner_race,
 		"flag_wave":        randf() * TAU,
+		"clearing_type":   "",
+		"clearing_seed":   randi(),
+		"clearing_decor":  [],
+		"clearing_poly":   PackedVector2Array(),
 	})
 	used.append(pos)
 
@@ -98,6 +105,102 @@ func _far_from_all(p: Vector2, used: Array, min_dist: float) -> bool:
 	for u in used:
 		if p.distance_to(u) < min_dist: return false
 	return true
+
+func _generate_clearing(node: Dictionary):
+	var rng = RandomNumberGenerator.new()
+	rng.seed = node.clearing_seed
+
+	var cx = node.pos.x / WORLD_W
+	var cy = node.pos.y / WORLD_H
+
+	var river_already = false
+	for other in game_nodes:
+		if other == node: continue
+		if other.clearing_type == "river_crossing":
+			river_already = true
+			break
+
+	var weights = {"forest_camp": 3, "river_crossing": 2, "ruins": 2, "open_field": 1}
+	if river_already:
+		weights["river_crossing"] = 0
+	var is_central = cx > 0.3 and cx < 0.7 and cy > 0.3 and cy < 0.7
+	if is_central:
+		weights["ruins"] = 4
+
+	var pool: Array = []
+	for t in weights:
+		for _i in range(weights[t]):
+			pool.append(t)
+	node.clearing_type = pool[rng.randi() % pool.size()]
+
+	var num_pts = 14
+	var base_r  = 110.0
+	var poly    = PackedVector2Array()
+	for i in range(num_pts):
+		var angle = float(i) / float(num_pts) * TAU
+		var r = base_r + sin(angle * 3.0 + rng.randf() * TAU) * 22.0 \
+					   + sin(angle * 5.0 + rng.randf() * TAU) * 12.0
+		poly.append(node.pos + Vector2(cos(angle), sin(angle)) * r)
+	node.clearing_poly = poly
+
+	match node.clearing_type:
+		"forest_camp":
+			node.clearing_decor.append({"type": "campfire", "pos": node.pos, "seed": rng.randi()})
+			var tent_count = rng.randi_range(2, 3)
+			for _i in range(tent_count):
+				var a = rng.randf() * TAU
+				var r = rng.randf_range(45.0, 80.0)
+				node.clearing_decor.append({"type": "tent",
+					"pos": node.pos + Vector2(cos(a), sin(a)) * r,
+					"seed": rng.randi()})
+			for _i in range(4):
+				var a = rng.randf() * TAU
+				var r = rng.randf_range(85.0, 120.0)
+				node.clearing_decor.append({"type": "tree",
+					"pos": node.pos + Vector2(cos(a), sin(a)) * r,
+					"seed": rng.randi()})
+
+		"river_crossing":
+			var river_angle = rng.randf() * TAU
+			var perp = Vector2(cos(river_angle), sin(river_angle))
+			node.clearing_decor.append({"type": "river",
+				"pos": node.pos, "seed": rng.randi(), "dir": perp})
+			for _i in range(6):
+				var t = rng.randf_range(-90.0, 90.0)
+				var side = 1 if rng.randi() % 2 == 0 else -1
+				var reed_pos = node.pos + perp * t + perp.rotated(PI * 0.5) * (18.0 * side + rng.randf_range(-6, 6))
+				node.clearing_decor.append({"type": "reed",
+					"pos": reed_pos, "seed": rng.randi()})
+			if rng.randf() > 0.45:
+				node.clearing_decor.append({"type": "bridge",
+					"pos": node.pos, "seed": rng.randi(), "dir": perp})
+
+		"ruins":
+			var col_count = rng.randi_range(4, 6)
+			for _i in range(col_count):
+				var a = rng.randf() * TAU
+				var r = rng.randf_range(30.0, 85.0)
+				node.clearing_decor.append({"type": "column",
+					"pos": node.pos + Vector2(cos(a), sin(a)) * r,
+					"seed": rng.randi()})
+			node.clearing_decor.append({"type": "arch",
+				"pos": node.pos + Vector2(rng.randf_range(-30, 30), rng.randf_range(-30, 30)),
+				"seed": rng.randi()})
+			for _i in range(3):
+				var a = rng.randf() * TAU
+				var r = rng.randf_range(20.0, 70.0)
+				node.clearing_decor.append({"type": "bush",
+					"pos": node.pos + Vector2(cos(a), sin(a)) * r,
+					"seed": rng.randi()})
+
+		"open_field":
+			var rock_count = rng.randi_range(3, 5)
+			for _i in range(rock_count):
+				var a = rng.randf() * TAU
+				var r = rng.randf_range(30.0, 100.0)
+				node.clearing_decor.append({"type": "rock",
+					"pos": node.pos + Vector2(cos(a), sin(a)) * r,
+					"seed": rng.randi()})
 
 func _generate_connections():
 	var n = game_nodes.size()
@@ -206,19 +309,34 @@ func _spawn_starting_units():
 	var sq_orc = _make_squad(game_nodes[last], AI_RACE)
 	for _i in range(5):
 		_spawn_unit(game_nodes[last], AI_RACE, sq_orc)
-	_spawn_neutral_ambushers()
+	_spawn_clearing_guards()
 
-func _spawn_neutral_ambushers():
-	for conn in connections:
-		var a     = game_nodes[conn[0]].pos
-		var b     = game_nodes[conn[1]].pos
-		var t     = randf_range(0.25, 0.75)
-		var perp  = (b - a).normalized().rotated(PI * 0.5)
-		var center = a.lerp(b, t) + perp * randf_range(-40, 40)
-		var count = randi_range(2, 4)
-		var sq    = _make_squad_neutral(center)
+func _spawn_clearing_guards():
+	for n in game_nodes:
+		if n.clearing_type == "": continue
+		var rng = RandomNumberGenerator.new()
+		rng.seed = n.clearing_seed ^ 0xDEADBEEF
+		var count = rng.randi_range(2, 4)
+		var sq = _make_squad_neutral(n.pos)
+		sq.home = n
 		for _i in range(count):
-			_spawn_neutral_on_road(center, sq)
+			var a = rng.randf() * TAU
+			var r = rng.randf_range(20.0, 70.0)
+			var guard_pos = n.pos + Vector2(cos(a), sin(a)) * r
+			var u = {
+				"pos": _find_free_position(guard_pos, units),
+				"home": n, "race": NEUTRAL_RACE, "squad": sq,
+				"hp": UNIT_HP, "max_hp": UNIT_HP,
+				"state": "idle",
+				"target_node": null, "from_pos": Vector2.ZERO, "move_progress": 0.0,
+				"path": [],
+				"attack_timer": rng.randf() * ATTACK_INTERVAL,
+				"combat_target": null, "selected": false,
+				"hit_flash": 0.0, "death_alpha": 1.0,
+				"idle_offset": rng.randf() * TAU,
+			}
+			sq.units.append(u)
+			units.append(u)
 
 func _make_squad_neutral(center: Vector2) -> Dictionary:
 	var sq = {
@@ -254,22 +372,6 @@ func _spawn_unit(node: Dictionary, race: String, squad) -> Dictionary:
 	if squad != null:
 		squad.units.append(u)
 	return u
-
-func _spawn_neutral_on_road(center: Vector2, sq: Dictionary):
-	var pos = _find_free_position(center, units)
-	var u = {
-		"pos": pos, "home": null, "race": NEUTRAL_RACE, "squad": sq,
-		"hp": UNIT_HP, "max_hp": UNIT_HP,
-		"state": "idle",
-		"target_node": null, "from_pos": Vector2.ZERO, "move_progress": 0.0,
-		"path": [],
-		"attack_timer": randf() * ATTACK_INTERVAL,
-		"combat_target": null, "selected": false,
-		"hit_flash": 0.0, "death_alpha": 1.0,
-		"idle_offset": randf() * TAU,
-	}
-	sq.units.append(u)
-	units.append(u)
 
 func _find_free_position(center: Vector2, existing: Array) -> Vector2:
 	for ring in range(1, 15):
@@ -979,11 +1081,121 @@ func _draw_road_decor(d: Dictionary):
 				var off = Vector2(rng.randf_range(-20, 20), rng.randf_range(-20, 20))
 				draw_circle(p + off, rng.randf_range(8, 16), rc)
 
+func _draw_clearing_floor(n: Dictionary, alpha: float):
+	if n.clearing_poly.size() < 3: return
+	var floor_col: Color
+	match n.clearing_type:
+		"river_crossing": floor_col = Color(0.22, 0.28, 0.16, alpha)
+		"ruins":          floor_col = Color(0.27, 0.24, 0.18, alpha)
+		"open_field":     floor_col = Color(0.26, 0.30, 0.17, alpha)
+		_:                floor_col = Color(0.20, 0.26, 0.13, alpha)
+	draw_colored_polygon(n.clearing_poly, floor_col)
+	draw_polyline(n.clearing_poly + PackedVector2Array([n.clearing_poly[0]]),
+		Color(0.15, 0.20, 0.10, alpha * 0.6), 2.0)
+
+func _draw_clearing_decor(n: Dictionary, alpha: float):
+	var rng = RandomNumberGenerator.new()
+	for d in n.clearing_decor:
+		rng.seed = d.seed
+		var p: Vector2 = d.pos
+		match d.type:
+			"campfire":
+				draw_circle(p, 10, Color(0.18, 0.14, 0.10, alpha))
+				draw_circle(p, 7,  Color(0.85, 0.40, 0.05, alpha))
+				draw_circle(p, 4,  Color(1.00, 0.75, 0.10, alpha))
+				for _i in range(5):
+					var smoke_off = Vector2(rng.randf_range(-4, 4), -rng.randf_range(12, 22))
+					draw_circle(p + smoke_off, rng.randf_range(2, 4), Color(0.55, 0.52, 0.50, alpha * 0.45))
+
+			"tent":
+				var w = 28.0
+				var h = 22.0
+				var tent_pts = PackedVector2Array([
+					p + Vector2(-w * 0.5, h * 0.5),
+					p + Vector2(0, -h * 0.5),
+					p + Vector2(w * 0.5, h * 0.5),
+				])
+				draw_colored_polygon(tent_pts, Color(0.42, 0.30, 0.15, alpha))
+				draw_polyline(tent_pts + PackedVector2Array([tent_pts[0]]),
+					Color(0.30, 0.20, 0.08, alpha), 2.0)
+				draw_line(p + Vector2(-w * 0.5, h * 0.5), p + Vector2(w * 0.5, h * 0.5),
+					Color(0.30, 0.20, 0.08, alpha), 2.0)
+
+			"tree":
+				var trunk_col = Color(0.35, 0.25, 0.12, alpha)
+				var leaf_col  = Color(0.15 + rng.randf() * 0.1, 0.40 + rng.randf() * 0.2, 0.12, alpha)
+				draw_rect(Rect2(p + Vector2(-5, 0), Vector2(10, 20)), trunk_col)
+				draw_circle(p + Vector2(0, -8),  22, leaf_col)
+				draw_circle(p + Vector2(-10, 2), 14, leaf_col)
+				draw_circle(p + Vector2(10, 2),  14, leaf_col)
+
+			"river":
+				var dir: Vector2 = d.dir
+				var perp = dir.rotated(PI * 0.5)
+				var w = 22.0
+				var length = 130.0
+				var river_pts = PackedVector2Array([
+					p + dir * (-length) + perp * w,
+					p + dir * (-length) - perp * w,
+					p + dir * (length)  - perp * w,
+					p + dir * (length)  + perp * w,
+				])
+				draw_colored_polygon(river_pts, Color(0.25, 0.45, 0.65, alpha * 0.75))
+				draw_line(p + dir * (-length) + perp * (w - 5),
+					p + dir * (length) + perp * (w - 5),
+					Color(0.35, 0.60, 0.80, alpha * 0.4), 3.0)
+
+			"reed":
+				var rc = Color(0.32, 0.52, 0.22, alpha)
+				draw_line(p, p + Vector2(rng.randf_range(-3, 3), -14), rc, 2.0)
+				draw_circle(p + Vector2(0, -14), 3, Color(0.50, 0.38, 0.12, alpha))
+
+			"bridge":
+				var dir: Vector2 = d.dir
+				var perp = dir.rotated(PI * 0.5)
+				var bc = Color(0.48, 0.38, 0.22, alpha)
+				draw_rect(Rect2(p + dir * (-55) + perp * (-16), Vector2(40, 32)), bc)
+				draw_rect(Rect2(p + dir * (15)  + perp * (-16), Vector2(40, 32)), bc)
+
+			"column":
+				var fallen = rng.randf() > 0.5
+				var stone_col = Color(0.58 + rng.randf() * 0.08, 0.55, 0.50, alpha)
+				if fallen:
+					draw_rect(Rect2(p + Vector2(-6, -20), Vector2(12, 22)), stone_col)
+					draw_rect(Rect2(p + Vector2(-8, -22), Vector2(16, 5)),  stone_col)
+					draw_rect(Rect2(p + Vector2(-8, -3),  Vector2(16, 5)),  stone_col)
+				else:
+					draw_rect(Rect2(p + Vector2(-5, -18), Vector2(10, 22)), stone_col)
+					draw_rect(Rect2(p + Vector2(-7, -20), Vector2(14, 4)),  stone_col)
+
+			"arch":
+				var stone_col = Color(0.55, 0.52, 0.46, alpha)
+				draw_arc(p, 32, PI, 2 * PI, 20, stone_col, 8)
+				draw_line(p + Vector2(-32, 0), p + Vector2(-32, 20), stone_col, 8)
+				draw_line(p + Vector2(32,  0), p + Vector2(32,  20), stone_col, 8)
+
+			"bush":
+				var bush_col = Color(0.22, 0.38 + rng.randf() * 0.1, 0.15, alpha)
+				draw_circle(p,                    14, bush_col)
+				draw_circle(p + Vector2(12, 4),   10, bush_col)
+				draw_circle(p + Vector2(-10, 4),  10, bush_col)
+
+			"rock":
+				var rock_col = Color(0.52 + rng.randf() * 0.1, 0.50, 0.46, alpha)
+				draw_circle(p,                   18, rock_col)
+				draw_circle(p + Vector2(14, 6),  13, rock_col)
+				draw_circle(p + Vector2(-10, 8), 11, rock_col)
+
 func draw_game_node(n: Dictionary):
 	var p   = n.pos
 	var fog = _fog_at(p)
 	if fog == FOG_HIDDEN: return
 	var alpha: float = 0.5 if fog == FOG_EXPLORED else 1.0
+
+	if n.clearing_type != "":
+		_draw_clearing_floor(n, alpha)
+		if fog == FOG_VISIBLE:
+			_draw_clearing_decor(n, alpha)
 
 	if n.capture_owner == PLAYER_RACE and fog == FOG_VISIBLE:
 		draw_circle(p, CAPTURE_VISION, Color(0.3, 0.55, 1.0, 0.05))
