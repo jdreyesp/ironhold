@@ -73,16 +73,16 @@ func _setup_camera(_viewport: Vector2):
 
 # ── node generation ───────────────────────────────────────────────────────────
 func _generate_nodes():
-	var margin = 350.0
+	var margin = 400.0
 	var used: Array = []
 	_place_node(Vector2(randf_range(margin, WORLD_W * 0.25), randf_range(margin, WORLD_H - margin)),
 		"Fortaleza", PLAYER_RACE, used)
 	for label in ["Paso Norte", "Cruce", "Torre Vigía", "Aldea"]:
 		var p: Vector2
 		var tries = 0
-		while tries < 200:
+		while tries < 300:
 			p = Vector2(randf_range(margin, WORLD_W - margin), randf_range(margin, WORLD_H - margin))
-			if _far_from_all(p, used, 500.0): break
+			if _far_from_all(p, used, 750.0): break
 			tries += 1
 		_place_node(p, label, "neutral", used)
 	_place_node(Vector2(randf_range(WORLD_W * 0.75, WORLD_W - margin), randf_range(margin, WORLD_H - margin)),
@@ -222,11 +222,37 @@ func _generate_connections():
 		connections.append(best_pair)
 		connected.append(best_pair[1])
 		remaining.erase(best_pair[1])
-	for _i in range(2):
+	var extra_tries = 0
+	var extras_added = 0
+	while extras_added < 2 and extra_tries < 100:
+		extra_tries += 1
 		var a = randi() % n
 		var b = randi() % n
-		if a != b and not _has_connection(a, b):
-			connections.append([a, b])
+		if a == b or _has_connection(a, b): continue
+		if _road_too_close(a, b, 280.0): continue
+		connections.append([a, b])
+		extras_added += 1
+
+func _road_too_close(new_a: int, new_b: int, min_sep: float) -> bool:
+	var pa = game_nodes[new_a].pos
+	var pb = game_nodes[new_b].pos
+	for conn in connections:
+		var ca = game_nodes[conn[0]].pos
+		var cb = game_nodes[conn[1]].pos
+		if _segments_min_dist(pa, pb, ca, cb) < min_sep:
+			return true
+	return false
+
+func _segments_min_dist(a1: Vector2, a2: Vector2, b1: Vector2, b2: Vector2) -> float:
+	var samples = 8
+	var min_d = INF
+	for i in range(samples + 1):
+		var t = float(i) / float(samples)
+		var pa = a1.lerp(a2, t)
+		var pb = b1.lerp(b2, t)
+		min_d = minf(min_d, _point_to_segment_dist(pa, b1, b2))
+		min_d = minf(min_d, _point_to_segment_dist(pb, a1, a2))
+	return min_d
 
 func _has_connection(a: int, b: int) -> bool:
 	for c in connections:
