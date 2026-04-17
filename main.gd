@@ -1463,7 +1463,7 @@ func draw_game_node(n: Dictionary):
 		else Color(0.5, 0.5, 0.42, alpha))
 	draw_arc(p, NODE_RADIUS - 3, 0, TAU, 48, ring_col, 5)
 
-	if n.capture_progress > 0.0 and n.capture_progress < 1.0:
+	if n.capture_progress > 0.0 and n.capture_progress < 1.0 and fog == FOG_VISIBLE:
 		var arc_race = n.capture_owner if n.capture_owner != "" else n.capturing_race
 		var arc_col = Color(0.3, 0.65, 0.3, alpha) if arc_race == PLAYER_RACE \
 			else Color(0.65, 0.25, 0.15, alpha)
