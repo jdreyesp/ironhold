@@ -445,7 +445,8 @@ func squads_at(node: Dictionary, race: String = "") -> Array:
 	for sq in squads:
 		if sq.home == node and sq.state == "idle" \
 			and (race == "" or sq.race == race) \
-			and _squad_alive_count(sq) > 0:
+			and _squad_alive_count(sq) > 0 \
+			and _squad_centroid(sq).distance_to(node.pos) <= NODE_RADIUS:
 			r.append(sq)
 	return r
 
