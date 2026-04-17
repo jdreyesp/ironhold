@@ -658,17 +658,25 @@ func _process_units(delta):
 						u.pos += (u.engage_pos - u.pos).normalized() * step
 
 			"moving":
-				var dest  = u.move_dest
-				var to_go = dest - u.pos
-				var dist  = to_go.length()
-				var step  = _unit_move_speed(u) * delta
+				var road_a    = u.from_pos
+				var road_b    = u.target_node.pos
+				var on_road   = _project_to_segment(u.pos - u.formation_offset, road_a, road_b)
+				var to_go     = road_b - on_road
+				var dist      = to_go.length()
+				var step      = _unit_move_speed(u) * delta
 				if dist <= step:
-					u.pos   = dest
+					u.pos   = road_b + u.formation_offset
 					u.state = "idle"
 					u.home  = u.target_node
 				else:
-					u.pos += to_go.normalized() * step
+					var new_on_road = on_road + to_go.normalized() * step
+					u.pos = new_on_road + u.formation_offset
 					_check_ambush(u, delta)
+					var spotted = _enemies_in_radius(u, ALERT_RADIUS)
+					if spotted.size() > 0:
+						_start_approach(u, _pick_engagement_target(u, spotted))
+						if u.squad != null and u.squad.alert_flash <= 0.0:
+							_alert_squad_to_combat(u.squad, u.home)
 
 			"combat":
 				if u.combat_target == null or u.combat_target.state == "dead":
@@ -711,32 +719,39 @@ func _process_units(delta):
 func _unit_move_speed(u: Dictionary) -> float:
 	return MOVE_PX_SOLDIER
 
+func _project_to_segment(p: Vector2, a: Vector2, b: Vector2) -> Vector2:
+	var ab = b - a
+	var len_sq = ab.length_squared()
+	if len_sq < 0.001: return a
+	var t = clamp((p - a).dot(ab) / len_sq, 0.0, 1.0)
+	return a + ab * t
+
 func _unit_start_move_to(u: Dictionary, target: Dictionary):
 	_release_engagement(u)
 	u.state           = "moving"
-	u.from_pos        = u.pos
+	u.from_pos        = _project_to_segment(u.pos, u.pos, target.pos)
 	u.target_node     = target
 	u.move_progress   = 0.0
 	u.combat_target   = null
 	u.approach_target = null
 	u.path            = []
+	var road_dir = (target.pos - u.pos)
+	var road_len = road_dir.length()
+	if road_len > 0.1:
+		road_dir = road_dir / road_len
+	else:
+		road_dir = Vector2(1, 0)
+	var perp = road_dir.rotated(PI * 0.5)
 	var sq = u.squad
 	if sq != null:
 		var alive = sq.units.filter(func(x): return x.state != "dead")
 		var idx   = alive.find(u)
 		var cnt   = alive.size()
-		u.formation_offset = _formation_offset(idx, cnt)
+		var lane  = (float(idx) - float(cnt - 1) * 0.5) * UNIT_RADIUS * 2.2
+		u.formation_offset = perp * lane
 	else:
 		u.formation_offset = Vector2.ZERO
 	u.move_dest = target.pos + u.formation_offset
-
-func _formation_offset(idx: int, count: int) -> Vector2:
-	if count <= 1: return Vector2.ZERO
-	var ring  = int(idx / 6) + 1
-	var pos_in_ring = idx % 6
-	var slots = min(6, count - (ring - 1) * 6)
-	var angle = float(pos_in_ring) / float(slots) * TAU + float(ring) * 0.5
-	return Vector2(cos(angle), sin(angle)) * ring * UNIT_SPACING
 
 func _enemy_of(race: String) -> String:
 	if race == PLAYER_RACE: return AI_RACE
@@ -891,16 +906,8 @@ func _update_hover_road():
 # ── camera scroll ─────────────────────────────────────────────────────────────
 func _scroll_camera(_delta: float):
 	if not cam: return
-	var v = get_viewport_rect().size
-	var mouse = get_viewport().get_mouse_position()
-	var edge   = 60.0
 	var spd    = 22.0
 	var zoom_f = 1.0 / cam.zoom.x
-
-	if mouse.x < edge:       cam.position.x -= spd * zoom_f
-	if mouse.x > v.x - edge: cam.position.x += spd * zoom_f
-	if mouse.y < edge:       cam.position.y -= spd * zoom_f
-	if mouse.y > v.y - edge: cam.position.y += spd * zoom_f
 
 	if Input.is_key_pressed(KEY_LEFT)  or Input.is_key_pressed(KEY_A): cam.position.x -= spd * zoom_f
 	if Input.is_key_pressed(KEY_RIGHT) or Input.is_key_pressed(KEY_D): cam.position.x += spd * zoom_f
@@ -1022,6 +1029,17 @@ func _input(event):
 				Vector2(min(selection_start.x, e.x), min(selection_start.y, e.y)),
 				Vector2(abs(e.x - selection_start.x), abs(e.y - selection_start.y))
 			)
+
+	# ── trackpad: two-finger pan ───────────────────────────────────────────────
+	elif event is InputEventPanGesture:
+		var zoom_f = 1.0 / cam.zoom.x
+		cam.position += event.delta * zoom_f * 5.0
+		cam.position.x = clamp(cam.position.x, 0, WORLD_W)
+		cam.position.y = clamp(cam.position.y, 0, WORLD_H)
+
+	# ── trackpad: pinch to zoom ────────────────────────────────────────────────
+	elif event is InputEventMagnifyGesture:
+		cam.zoom = (cam.zoom * event.factor).clamp(Vector2(0.5, 0.5), Vector2(6.0, 6.0))
 
 	elif event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed:
