@@ -582,14 +582,23 @@ func _process_squads(delta):
 
 	_process_node_capture(delta)
 
+func _neutrals_in_combat_at(n: Dictionary) -> bool:
+	for u in units:
+		if u.race != NEUTRAL_RACE: continue
+		if u.state != "combat" and u.state != "approach": continue
+		if u.pos.distance_to(n.pos) <= NODE_RADIUS + ALERT_RADIUS:
+			return true
+	return false
+
 func _process_node_capture(delta):
 	for n in game_nodes:
 		n.flag_wave += delta
 
-		var humans_here = squads_at(n, PLAYER_RACE).size() > 0
-		var orcs_here   = squads_at(n, AI_RACE).size() > 0
+		var humans_here   = squads_at(n, PLAYER_RACE).size() > 0
+		var orcs_here     = squads_at(n, AI_RACE).size() > 0
+		var neutrals_here = _neutrals_in_combat_at(n)
 
-		if humans_here and orcs_here:
+		if (humans_here and orcs_here) or neutrals_here:
 			continue
 
 		if not humans_here and not orcs_here:
@@ -634,13 +643,16 @@ func _process_units(delta):
 					else:
 						_start_approach(u, _pick_engagement_target(u, spotted))
 				else:
-					var dist = u.pos.distance_to(u.engage_pos)
+					var to_target = u.approach_target.pos - u.pos
+					var dist_to_target = to_target.length()
 					var step = _unit_move_speed(u) * delta
-					if dist <= step:
-						u.pos           = u.engage_pos
-						u.state         = "combat"
-						u.combat_target = u.approach_target
-						u.attack_timer  = 0.0
+					var engage_dist = MELEE_RANGE + UNIT_RADIUS
+					u.engage_pos = u.approach_target.pos - to_target.normalized() * engage_dist
+					if dist_to_target <= engage_dist + step:
+						u.pos             = u.engage_pos
+						u.state           = "combat"
+						u.combat_target   = u.approach_target
+						u.attack_timer    = 0.0
 						u.approach_target = null
 					else:
 						u.pos += (u.engage_pos - u.pos).normalized() * step
@@ -735,12 +747,14 @@ func _enemies_in_radius(u: Dictionary, radius: float) -> Array:
 	var r = []
 	for other in units:
 		if other == u or other.state == "dead": continue
+		var d = u.pos.distance_to(other.pos)
+		if d >= radius: continue
 		if u.race == NEUTRAL_RACE:
-			if other.race != NEUTRAL_RACE and u.pos.distance_to(other.pos) < radius:
+			if other.race != NEUTRAL_RACE:
 				r.append(other)
 		else:
 			var enemy_race = _enemy_of(u.race)
-			if other.race == enemy_race and u.pos.distance_to(other.pos) < radius:
+			if other.race == enemy_race or other.race == NEUTRAL_RACE:
 				r.append(other)
 	return r
 
