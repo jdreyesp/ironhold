@@ -1051,9 +1051,15 @@ func _event_world(screen_pos: Vector2) -> Vector2:
 	return cam.get_screen_center_position() \
 		+ (screen_pos - get_viewport_rect().size * 0.5) / cam.zoom.x
 
+func _squad_is_busy(sq: Dictionary) -> bool:
+	if sq.state == "moving" or sq.state == "committed": return true
+	for u in sq.units:
+		if u.state == "combat" or u.state == "approach": return true
+	return false
+
 func _order_squads_to_node(target_idx: int):
 	for sq in selected_squads:
-		if sq.state == "dead": continue
+		if sq.state == "dead" or _squad_is_busy(sq): continue
 		var from_idx = node_index(sq.home)
 		if from_idx == -1 or from_idx == target_idx: continue
 		_squad_start_move(sq, from_idx, target_idx)
@@ -1063,6 +1069,7 @@ func _order_squads_to_node(target_idx: int):
 
 func _order_squads_via_road(node_a: int, node_b: int, click_pos: Vector2):
 	for sq in selected_squads:
+		if _squad_is_busy(sq): continue
 		var from_idx = node_index(sq.home)
 		if from_idx == -1: continue
 		var da = game_nodes[node_a].pos.distance_to(click_pos)
