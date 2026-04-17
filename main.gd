@@ -92,11 +92,12 @@ func _generate_nodes():
 			_generate_clearing(n)
 
 func _place_node(pos: Vector2, label: String, owner_race: String, used: Array):
+	var is_neutral = owner_race == "neutral"
 	game_nodes.append({
 		"pos": pos, "label": label, "owner": owner_race,
-		"capture_owner":    owner_race,
-		"capture_progress": 1.0 if owner_race != "neutral" else 0.0,
-		"capturing_race":   owner_race,
+		"capture_owner":    "" if is_neutral else owner_race,
+		"capture_progress": 0.0 if is_neutral else 1.0,
+		"capturing_race":   "" if is_neutral else owner_race,
 		"flag_wave":        randf() * TAU,
 		"clearing_type":   "",
 		"clearing_seed":   randi(),
@@ -346,6 +347,7 @@ func _spawn_clearing_guards():
 		if n.clearing_type == "": continue
 		var rng = RandomNumberGenerator.new()
 		rng.seed = n.clearing_seed ^ 0xDEADBEEF
+		if rng.randf() > 0.6: continue
 		var count = rng.randi_range(2, 4)
 		var sq = _make_squad_neutral(n.pos)
 		sq.home = n
@@ -1489,7 +1491,7 @@ func draw_game_node(n: Dictionary):
 		draw_circle(p, 22, Color(0.38, 0.35, 0.28, alpha))
 		draw_arc(p, 22, 0, TAU, 24, Color(0.6, 0.57, 0.48, alpha), 2)
 
-	if n.capture_owner != "" and fog == FOG_VISIBLE:
+	if (n.capture_owner == PLAYER_RACE or n.capture_owner == AI_RACE) and fog == FOG_VISIBLE:
 		_draw_flag(p, n.capture_owner, n.flag_wave, alpha)
 
 	if fog == FOG_VISIBLE:
