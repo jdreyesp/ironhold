@@ -11,11 +11,15 @@ const PLAYER_RACE     = "human"
 const AI_RACE         = "orc"
 const NEUTRAL_RACE    = "neutral_unit"
 
-const MOVE_PX_SOLDIER = 90.0
-const MOVE_SPEED      = MOVE_PX_SOLDIER
-const VISION_RADIUS   = 220.0
-const UNIT_SPACING    = 28.0
-const ROAD_HIT_WIDTH  = 30.0
+const MOVE_PX_SOLDIER    = 90.0
+const MOVE_SPEED         = MOVE_PX_SOLDIER
+const VISION_RADIUS      = 220.0
+const ALERT_RADIUS       = 120.0
+const ENGAGE_RADIUS      = 60.0
+const MELEE_RANGE        = 22.0
+const UNIT_RADIUS        = 10.0
+const UNIT_SPACING       = 32.0
+const ROAD_HIT_WIDTH     = 30.0
 const CAPTURE_TIME    = 15.0
 const CAPTURE_REVERSE = 7.5
 const CAPTURE_VISION  = 280.0
@@ -329,9 +333,15 @@ func _spawn_clearing_guards():
 				"hp": UNIT_HP, "max_hp": UNIT_HP,
 				"state": "idle",
 				"target_node": null, "from_pos": Vector2.ZERO, "move_progress": 0.0,
+				"move_dest": Vector2.ZERO,
+				"formation_offset": Vector2.ZERO,
 				"path": [],
 				"attack_timer": rng.randf() * ATTACK_INTERVAL,
-				"combat_target": null, "selected": false,
+				"combat_target": null,
+				"approach_target": null,
+				"engage_pos": Vector2.ZERO,
+				"engaged_by": [],
+				"selected": false,
 				"hit_flash": 0.0, "death_alpha": 1.0,
 				"idle_offset": rng.randf() * TAU,
 			}
@@ -362,9 +372,15 @@ func _spawn_unit(node: Dictionary, race: String, squad) -> Dictionary:
 		"hp": UNIT_HP, "max_hp": UNIT_HP,
 		"state": "idle",
 		"target_node": null, "from_pos": Vector2.ZERO, "move_progress": 0.0,
+		"move_dest": Vector2.ZERO,
+		"formation_offset": Vector2.ZERO,
 		"path": [],
 		"attack_timer": randf() * ATTACK_INTERVAL,
-		"combat_target": null, "selected": false,
+		"combat_target": null,
+		"approach_target": null,
+		"engage_pos": Vector2.ZERO,
+		"engaged_by": [],
+		"selected": false,
 		"hit_flash": 0.0, "death_alpha": 1.0,
 		"idle_offset": randf() * TAU,
 	}
@@ -492,6 +508,7 @@ func _process(delta):
 
 	_process_squads(delta)
 	_process_units(delta)
+	_resolve_collisions()
 
 	if ai_timer >= AI_INTERVAL:
 		ai_timer = 0.0
@@ -523,8 +540,8 @@ func _process_squads(delta):
 				for u in sq.units:
 					if u.state == "dead": continue
 					match u.state:
-						"combat":  has_combat   = true
-						"moving":  has_moving   = true
+						"combat", "approach": has_combat   = true
+						"moving":             has_moving   = true
 						"idle":
 							if u.home != sq.target_node:
 								has_idle_mid = true
@@ -602,20 +619,37 @@ func _process_units(delta):
 	for u in units:
 		match u.state:
 			"idle":
-				var enemy_race = _enemy_of(u.race)
-				if enemy_race != "":
-					var enemies = units_at(u.home, enemy_race) if u.home != null else _nearby_enemies(u)
-					if enemies.size() > 0:
-						u.state = "combat"
-						u.attack_timer = 0.0
-						if u.squad != null and u.squad.alert_flash <= 0.0:
-							_alert_squad_to_combat(u.squad, u.home)
+				var spotted = _enemies_in_radius(u, ALERT_RADIUS)
+				if spotted.size() > 0:
+					_start_approach(u, _pick_engagement_target(u, spotted))
+					if u.squad != null and u.squad.alert_flash <= 0.0:
+						_alert_squad_to_combat(u.squad, u.home)
+
+			"approach":
+				if u.approach_target == null or u.approach_target.state == "dead":
+					_release_engagement(u)
+					var spotted = _enemies_in_radius(u, ALERT_RADIUS)
+					if spotted.is_empty():
+						u.state = "idle"
+					else:
+						_start_approach(u, _pick_engagement_target(u, spotted))
+				else:
+					var dist = u.pos.distance_to(u.engage_pos)
+					var step = _unit_move_speed(u) * delta
+					if dist <= step:
+						u.pos           = u.engage_pos
+						u.state         = "combat"
+						u.combat_target = u.approach_target
+						u.attack_timer  = 0.0
+						u.approach_target = null
+					else:
+						u.pos += (u.engage_pos - u.pos).normalized() * step
 
 			"moving":
-				var dest   = u.target_node.pos
-				var to_go  = dest - u.pos
-				var dist   = to_go.length()
-				var step   = _unit_move_speed(u) * delta
+				var dest  = u.move_dest
+				var to_go = dest - u.pos
+				var dist  = to_go.length()
+				var step  = _unit_move_speed(u) * delta
 				if dist <= step:
 					u.pos   = dest
 					u.state = "idle"
@@ -625,21 +659,20 @@ func _process_units(delta):
 					_check_ambush(u, delta)
 
 			"combat":
-				var enemies: Array
-				if u.combat_target != null and u.combat_target.state != "dead":
-					enemies = [u.combat_target]
-				elif u.race == NEUTRAL_RACE:
-					enemies = _nearby_enemies_any(u)
+				if u.combat_target == null or u.combat_target.state == "dead":
+					_release_engagement(u)
+					var nearby = _enemies_in_radius(u, MELEE_RANGE * 2.0)
+					if not nearby.is_empty():
+						u.combat_target = _pick_engagement_target(u, nearby)
+						u.combat_target.engaged_by.append(u)
+						u.attack_timer = 0.0
+					else:
+						var wider = _enemies_in_radius(u, ALERT_RADIUS)
+						if wider.is_empty():
+							u.state = "idle"
+						else:
+							_start_approach(u, _pick_engagement_target(u, wider))
 				else:
-					var enemy_race = _enemy_of(u.race)
-					enemies = units_at(u.home, enemy_race)
-					if enemies.is_empty(): enemies = _nearby_enemies(u)
-				if enemies.is_empty():
-					u.state = "idle"
-					u.combat_target = null
-				else:
-					if u.combat_target == null or u.combat_target.state == "dead":
-						u.combat_target = enemies[randi() % enemies.size()]
 					u.attack_timer -= delta
 					if u.attack_timer <= 0.0:
 						u.attack_timer = ATTACK_INTERVAL
@@ -650,6 +683,7 @@ func _process_units(delta):
 							u.combat_target = null
 
 			"dead":
+				_release_engagement(u)
 				u.death_alpha -= delta * 1.5
 				if u.death_alpha <= 0:
 					to_remove.append(u)
@@ -666,69 +700,135 @@ func _unit_move_speed(u: Dictionary) -> float:
 	return MOVE_PX_SOLDIER
 
 func _unit_start_move_to(u: Dictionary, target: Dictionary):
-	u.state         = "moving"
-	u.from_pos      = u.pos
-	u.target_node   = target
-	u.move_progress = 0.0
-	u.combat_target = null
-	u.path          = []
+	_release_engagement(u)
+	u.state           = "moving"
+	u.from_pos        = u.pos
+	u.target_node     = target
+	u.move_progress   = 0.0
+	u.combat_target   = null
+	u.approach_target = null
+	u.path            = []
+	var sq = u.squad
+	if sq != null:
+		var alive = sq.units.filter(func(x): return x.state != "dead")
+		var idx   = alive.find(u)
+		var cnt   = alive.size()
+		u.formation_offset = _formation_offset(idx, cnt)
+	else:
+		u.formation_offset = Vector2.ZERO
+	u.move_dest = target.pos + u.formation_offset
+
+func _formation_offset(idx: int, count: int) -> Vector2:
+	if count <= 1: return Vector2.ZERO
+	var ring  = int(idx / 6) + 1
+	var pos_in_ring = idx % 6
+	var slots = min(6, count - (ring - 1) * 6)
+	var angle = float(pos_in_ring) / float(slots) * TAU + float(ring) * 0.5
+	return Vector2(cos(angle), sin(angle)) * ring * UNIT_SPACING
 
 func _enemy_of(race: String) -> String:
 	if race == PLAYER_RACE: return AI_RACE
 	if race == AI_RACE:     return PLAYER_RACE
 	return ""
 
-func _nearby_enemies(u: Dictionary) -> Array:
+func _enemies_in_radius(u: Dictionary, radius: float) -> Array:
 	var r = []
-	var enemy_race = _enemy_of(u.race)
-	if enemy_race == "": return r
 	for other in units:
-		if other.race == enemy_race and other.state != "dead" \
-			and u.pos.distance_to(other.pos) < 80.0:
-			r.append(other)
+		if other == u or other.state == "dead": continue
+		if u.race == NEUTRAL_RACE:
+			if other.race != NEUTRAL_RACE and u.pos.distance_to(other.pos) < radius:
+				r.append(other)
+		else:
+			var enemy_race = _enemy_of(u.race)
+			if other.race == enemy_race and u.pos.distance_to(other.pos) < radius:
+				r.append(other)
 	return r
 
+func _nearby_enemies(u: Dictionary) -> Array:
+	return _enemies_in_radius(u, ALERT_RADIUS)
+
 func _nearby_enemies_any(u: Dictionary) -> Array:
-	var r = []
-	for other in units:
-		if other != u and other.race != NEUTRAL_RACE and other.state != "dead" \
-			and u.pos.distance_to(other.pos) < 80.0:
-			r.append(other)
-	return r
+	return _enemies_in_radius(u, ALERT_RADIUS)
+
+func _pick_engagement_target(u: Dictionary, enemies: Array) -> Dictionary:
+	var free: Array = []
+	for e in enemies:
+		if e.engaged_by.size() == 0:
+			free.append(e)
+	if free.size() > 0:
+		return free[randi() % free.size()]
+	var sorted = enemies.duplicate()
+	sorted.sort_custom(func(a, b): return a.engaged_by.size() < b.engaged_by.size())
+	return sorted[0]
+
+func _start_approach(u: Dictionary, target: Dictionary):
+	_release_engagement(u)
+	u.state           = "approach"
+	u.approach_target = target
+	u.combat_target   = null
+	target.engaged_by.append(u)
+	u.engage_pos      = _assign_engage_pos(u, target)
+
+func _assign_engage_pos(attacker: Dictionary, target: Dictionary) -> Vector2:
+	var count = target.engaged_by.size()
+	var idx   = count - 1
+	var angle = float(idx) / float(max(1, count)) * TAU + randf() * 0.3
+	return target.pos + Vector2(cos(angle), sin(angle)) * (MELEE_RANGE + UNIT_RADIUS)
+
+func _release_engagement(u: Dictionary):
+	if u.approach_target != null:
+		u.approach_target.engaged_by.erase(u)
+		u.approach_target = null
+	if u.combat_target != null:
+		u.combat_target.engaged_by.erase(u)
+		u.combat_target = null
+
+func _resolve_collisions():
+	var min_d = UNIT_RADIUS * 2.0
+	for i in range(units.size()):
+		var a = units[i]
+		if a.state == "dead": continue
+		for j in range(i + 1, units.size()):
+			var b = units[j]
+			if b.state == "dead": continue
+			var d = a.pos.distance_to(b.pos)
+			if d < min_d and d > 0.001:
+				var push = (a.pos - b.pos).normalized() * (min_d - d) * 0.5
+				a.pos += push
+				b.pos -= push
 
 func _check_ambush(mover: Dictionary, _delta: float):
 	if mover.race != PLAYER_RACE and mover.race != AI_RACE: return
 	for u in units:
-		if u.race == NEUTRAL_RACE and u.state == "idle" \
-			and u.pos.distance_to(mover.pos) < 55.0:
-			u.state = "combat"
-			u.combat_target = mover
-			u.attack_timer  = 0.0
-			if mover.squad != null:
+		if u.race == NEUTRAL_RACE and (u.state == "idle") \
+			and u.pos.distance_to(mover.pos) < ALERT_RADIUS:
+			_start_approach(u, mover)
+			if u.squad != null and u.squad.alert_flash <= 0.0:
+				_squad_enter_combat_ambush(u.squad, mover)
+			if mover.squad != null and mover.squad.alert_flash <= 0.0:
 				_squad_enter_combat_ambush(mover.squad, u)
-			else:
-				mover.state = "combat"
-				mover.combat_target = u
-				mover.attack_timer  = 0.0
-				mover.path = []
 
-func _squad_enter_combat_ambush(sq: Dictionary, neutral_unit: Dictionary):
+func _squad_enter_combat_ambush(sq, enemy_unit: Dictionary):
+	if sq == null: return
 	sq.alert_flash = 1.2
 	for u in sq.units:
 		if u.state == "dead": continue
-		u.combat_target = neutral_unit
-		u.attack_timer  = randf() * ATTACK_INTERVAL
-		u.state         = "combat"
-		u.path          = []
+		if u.state != "combat" and u.state != "approach":
+			_start_approach(u, enemy_unit)
+			u.path = []
 	_alert_nearby_squads(sq, sq.home)
 
 func _alert_squad_to_combat(sq: Dictionary, combat_node):
 	if sq == null: return
 	sq.alert_flash = 1.2
+	var spotted: Array = []
 	for u in sq.units:
-		if u.state == "idle" and (combat_node == null or u.home == combat_node):
-			u.state = "combat"
-			u.attack_timer = 0.0
+		if u.state == "dead": continue
+		if u.state == "idle" or u.state == "moving":
+			spotted = _enemies_in_radius(u, ALERT_RADIUS)
+			if spotted.size() > 0:
+				_start_approach(u, _pick_engagement_target(u, spotted))
+				u.path = []
 	_alert_nearby_squads(sq, combat_node)
 
 func _alert_nearby_squads(alerter: Dictionary, combat_node):
@@ -1059,27 +1159,40 @@ func _draw_road_decor(d: Dictionary):
 	rng.seed = d.seed
 	match d.type:
 		"tree":
-			var trunk_col = Color(0.35, 0.25, 0.12, alpha)
-			var leaf_col  = Color(0.15 + rng.randf() * 0.1, 0.40 + rng.randf() * 0.2, 0.12, alpha)
-			draw_rect(Rect2(p + Vector2(-5, 0), Vector2(10, 20)), trunk_col)
-			draw_circle(p + Vector2(0, -8),  22, leaf_col)
-			draw_circle(p + Vector2(-10, 2), 14, leaf_col)
-			draw_circle(p + Vector2(10, 2),  14, leaf_col)
+			var g     = 0.32 + rng.randf() * 0.12
+			var crown = Color(0.12 + rng.randf() * 0.08, g, 0.10, alpha)
+			var dark  = Color(crown.r * 0.6, crown.g * 0.6, crown.b * 0.6, alpha)
+			draw_circle(p + Vector2(3, 4), 18, Color(0, 0, 0, 0.25 * alpha))
+			draw_circle(p, 16, dark)
+			draw_circle(p + Vector2(-4, -4), 11, crown)
+			draw_circle(p + Vector2(4, 3), 8, crown.lightened(0.08))
+			draw_circle(p + Vector2(-2, 5), 6, dark)
 		"rock":
-			var rock_col = Color(0.52 + rng.randf() * 0.1, 0.50, 0.46, alpha)
-			draw_circle(p,                   18, rock_col)
-			draw_circle(p + Vector2(14, 6),  13, rock_col)
-			draw_circle(p + Vector2(-10, 8), 11, rock_col)
+			var base  = 0.48 + rng.randf() * 0.10
+			var rc    = Color(base, base * 0.96, base * 0.90, alpha)
+			var light = rc.lightened(0.18)
+			draw_circle(p + Vector2(3, 4), 20, Color(0, 0, 0, 0.22 * alpha))
+			draw_circle(p, 17, rc)
+			draw_circle(p + Vector2(8, 5), 11, rc)
+			draw_circle(p + Vector2(-7, 6), 9, rc)
+			draw_circle(p + Vector2(-4, -5), 7, light)
 		"bush":
-			var bush_col = Color(0.22, 0.38 + rng.randf() * 0.1, 0.15, alpha)
-			draw_circle(p,                    14, bush_col)
-			draw_circle(p + Vector2(12, 4),   10, bush_col)
-			draw_circle(p + Vector2(-10, 4),  10, bush_col)
+			var bush_col = Color(0.20, 0.35 + rng.randf() * 0.10, 0.12, alpha)
+			var dark     = bush_col.darkened(0.25)
+			draw_circle(p + Vector2(2, 3), 14, Color(0, 0, 0, 0.18 * alpha))
+			draw_circle(p, 12, dark)
+			draw_circle(p + Vector2(-6, -3), 8, bush_col)
+			draw_circle(p + Vector2(6, -2),  7, bush_col)
+			draw_circle(p + Vector2(0, 5),   7, bush_col.lightened(0.06))
 		"rock_cluster":
-			var rc = Color(0.48, 0.45, 0.42, alpha)
+			var base = 0.46 + rng.randf() * 0.08
+			var rc   = Color(base, base * 0.95, base * 0.88, alpha)
+			draw_circle(p + Vector2(3, 4), 28, Color(0, 0, 0, 0.18 * alpha))
 			for _i in range(4):
-				var off = Vector2(rng.randf_range(-20, 20), rng.randf_range(-20, 20))
-				draw_circle(p + off, rng.randf_range(8, 16), rc)
+				var off = Vector2(rng.randf_range(-18, 18), rng.randf_range(-18, 18))
+				var r   = rng.randf_range(7, 14)
+				draw_circle(p + off, r, rc)
+				draw_circle(p + off + Vector2(-2, -2), r * 0.4, rc.lightened(0.15))
 
 func _draw_clearing_floor(n: Dictionary, alpha: float):
 	if n.clearing_poly.size() < 3: return
@@ -1100,34 +1213,41 @@ func _draw_clearing_decor(n: Dictionary, alpha: float):
 		var p: Vector2 = d.pos
 		match d.type:
 			"campfire":
-				draw_circle(p, 10, Color(0.18, 0.14, 0.10, alpha))
-				draw_circle(p, 7,  Color(0.85, 0.40, 0.05, alpha))
-				draw_circle(p, 4,  Color(1.00, 0.75, 0.10, alpha))
-				for _i in range(5):
-					var smoke_off = Vector2(rng.randf_range(-4, 4), -rng.randf_range(12, 22))
-					draw_circle(p + smoke_off, rng.randf_range(2, 4), Color(0.55, 0.52, 0.50, alpha * 0.45))
+				draw_circle(p, 13, Color(0.14, 0.10, 0.06, alpha * 0.5))
+				draw_circle(p, 10, Color(0.22, 0.16, 0.08, alpha))
+				draw_circle(p, 7,  Color(0.85, 0.38, 0.04, alpha))
+				draw_circle(p, 4,  Color(1.00, 0.72, 0.08, alpha))
+				draw_circle(p, 2,  Color(1.00, 0.95, 0.60, alpha))
+				for i in range(6):
+					var a = float(i) / 6.0 * TAU
+					draw_line(p, p + Vector2(cos(a), sin(a)) * rng.randf_range(5, 9),
+						Color(0.75, 0.32, 0.02, alpha * 0.7), 1)
 
 			"tent":
-				var w = 28.0
-				var h = 22.0
+				var w = 30.0
+				var h = 24.0
 				var tent_pts = PackedVector2Array([
-					p + Vector2(-w * 0.5, h * 0.5),
-					p + Vector2(0, -h * 0.5),
-					p + Vector2(w * 0.5, h * 0.5),
+					p + Vector2(-w * 0.5,  h * 0.3),
+					p + Vector2(-w * 0.15, -h * 0.5),
+					p + Vector2(w * 0.15,  -h * 0.5),
+					p + Vector2(w * 0.5,   h * 0.3),
 				])
 				draw_colored_polygon(tent_pts, Color(0.42, 0.30, 0.15, alpha))
 				draw_polyline(tent_pts + PackedVector2Array([tent_pts[0]]),
-					Color(0.30, 0.20, 0.08, alpha), 2.0)
-				draw_line(p + Vector2(-w * 0.5, h * 0.5), p + Vector2(w * 0.5, h * 0.5),
-					Color(0.30, 0.20, 0.08, alpha), 2.0)
+					Color(0.28, 0.18, 0.07, alpha), 2.0)
+				draw_line(p + Vector2(-w * 0.15, -h * 0.5), p + Vector2(w * 0.15, -h * 0.5),
+					Color(0.28, 0.18, 0.07, alpha), 2.0)
+				draw_circle(p + Vector2(0, -h * 0.5), 3, Color(0.58, 0.44, 0.22, alpha))
 
 			"tree":
-				var trunk_col = Color(0.35, 0.25, 0.12, alpha)
-				var leaf_col  = Color(0.15 + rng.randf() * 0.1, 0.40 + rng.randf() * 0.2, 0.12, alpha)
-				draw_rect(Rect2(p + Vector2(-5, 0), Vector2(10, 20)), trunk_col)
-				draw_circle(p + Vector2(0, -8),  22, leaf_col)
-				draw_circle(p + Vector2(-10, 2), 14, leaf_col)
-				draw_circle(p + Vector2(10, 2),  14, leaf_col)
+				var g     = 0.32 + rng.randf() * 0.12
+				var crown = Color(0.12 + rng.randf() * 0.08, g, 0.10, alpha)
+				var dark  = Color(crown.r * 0.6, crown.g * 0.6, crown.b * 0.6, alpha)
+				draw_circle(p + Vector2(3, 4), 18, Color(0, 0, 0, 0.25 * alpha))
+				draw_circle(p, 16, dark)
+				draw_circle(p + Vector2(-4, -4), 11, crown)
+				draw_circle(p + Vector2(4, 3), 8, crown.lightened(0.08))
+				draw_circle(p + Vector2(-2, 5), 6, dark)
 
 			"river":
 				var dir: Vector2 = d.dir
@@ -1175,16 +1295,23 @@ func _draw_clearing_decor(n: Dictionary, alpha: float):
 				draw_line(p + Vector2(32,  0), p + Vector2(32,  20), stone_col, 8)
 
 			"bush":
-				var bush_col = Color(0.22, 0.38 + rng.randf() * 0.1, 0.15, alpha)
-				draw_circle(p,                    14, bush_col)
-				draw_circle(p + Vector2(12, 4),   10, bush_col)
-				draw_circle(p + Vector2(-10, 4),  10, bush_col)
+				var bush_col = Color(0.20, 0.35 + rng.randf() * 0.10, 0.12, alpha)
+				var dark     = bush_col.darkened(0.25)
+				draw_circle(p + Vector2(2, 3), 14, Color(0, 0, 0, 0.18 * alpha))
+				draw_circle(p, 12, dark)
+				draw_circle(p + Vector2(-6, -3), 8, bush_col)
+				draw_circle(p + Vector2(6, -2),  7, bush_col)
+				draw_circle(p + Vector2(0, 5),   7, bush_col.lightened(0.06))
 
 			"rock":
-				var rock_col = Color(0.52 + rng.randf() * 0.1, 0.50, 0.46, alpha)
-				draw_circle(p,                   18, rock_col)
-				draw_circle(p + Vector2(14, 6),  13, rock_col)
-				draw_circle(p + Vector2(-10, 8), 11, rock_col)
+				var base  = 0.48 + rng.randf() * 0.10
+				var rc    = Color(base, base * 0.96, base * 0.90, alpha)
+				var light = rc.lightened(0.18)
+				draw_circle(p + Vector2(3, 4), 20, Color(0, 0, 0, 0.22 * alpha))
+				draw_circle(p, 17, rc)
+				draw_circle(p + Vector2(8, 5), 11, rc)
+				draw_circle(p + Vector2(-7, 6), 9, rc)
+				draw_circle(p + Vector2(-4, -5), 7, light)
 
 func draw_game_node(n: Dictionary):
 	var p   = n.pos
@@ -1271,96 +1398,82 @@ func _draw_flag(node_pos: Vector2, owner: String, wave: float, alpha: float):
 	draw_colored_polygon(pts, flag_col)
 
 func draw_unit(u: Dictionary):
-	var p       = u.pos
-	var al      = u.death_alpha
+	var p   = u.pos
+	var al  = u.death_alpha
+	var fl  = clamp(u.hit_flash, 0.0, 1.0)
+
 	var human   = u.race == PLAYER_RACE
 	var neutral = u.race == NEUTRAL_RACE
-	var bob     = sin(time_elapsed * 2.2 + u.idle_offset) * 1.5 if u.state == "idle" else 0.0
-	if u.state == "combat" and u.combat_target != null:
-		p += (u.combat_target.pos - u.pos).normalized() * sin(time_elapsed * 9.0 + u.idle_offset) * 3.5
-	p.y += bob
 
-	var fl        = clamp(u.hit_flash, 0.0, 1.0)
 	var body_col  : Color
-	var skin_col  : Color
-	var armor_col : Color
+	var detail_col: Color
+	var rim_col   : Color
 
 	if neutral:
-		body_col  = Color(0.55, 0.30, 0.10, al)
-		skin_col  = Color(0.80, 0.65, 0.45, al)
-		armor_col = Color(0.40, 0.28, 0.12, al)
+		body_col   = Color(0.55, 0.32, 0.10, al)
+		detail_col = Color(0.38, 0.22, 0.06, al)
+		rim_col    = Color(0.70, 0.48, 0.18, al)
 	elif human:
-		body_col  = Color(0.28, 0.48, 0.92, al)
-		skin_col  = Color(0.95, 0.82, 0.70, al)
-		armor_col = Color(0.62, 0.66, 0.76, al)
+		body_col   = Color(0.28, 0.48, 0.92, al)
+		detail_col = Color(0.18, 0.32, 0.70, al)
+		rim_col    = Color(0.72, 0.76, 0.88, al)
 	else:
-		body_col  = Color(0.22, 0.62, 0.18, al)
-		skin_col  = Color(0.42, 0.62, 0.28, al)
-		armor_col = Color(0.58, 0.32, 0.10, al)
+		body_col   = Color(0.22, 0.55, 0.16, al)
+		detail_col = Color(0.14, 0.38, 0.10, al)
+		rim_col    = Color(0.68, 0.42, 0.14, al)
 
 	if fl > 0:
-		body_col  = body_col.lerp(Color(1, 1, 1, al), fl)
-		skin_col  = skin_col.lerp(Color(1, 1, 1, al), fl)
-		armor_col = armor_col.lerp(Color(1, 1, 1, al), fl)
+		body_col   = body_col.lerp(Color(1, 1, 1, al), fl)
+		detail_col = detail_col.lerp(Color(1, 1, 1, al), fl)
+		rim_col    = rim_col.lerp(Color(1, 1, 1, al), fl)
+
+	var face_tgt = u.combat_target if u.state == "combat" else u.approach_target
+	var facing   = Vector2(0, -1)
+	if face_tgt != null and face_tgt.state != "dead" and u.pos.distance_to(face_tgt.pos) > 1.0:
+		facing = (face_tgt.pos - u.pos).normalized()
+	elif u.state == "moving" or u.state == "approach":
+		var dest = u.move_dest if u.state == "moving" else u.engage_pos
+		if u.pos.distance_to(dest) > 1.0:
+			facing = (dest - u.pos).normalized()
 
 	if u.state == "dead":
-		draw_circle(p + Vector2(8, 2),  int(5 * S), skin_col)
-		draw_rect(Rect2(p + Vector2(-4, 0), Vector2(int(9 * S), int(4 * S))), body_col)
+		draw_circle(p + Vector2(3, 3), 7, Color(0, 0, 0, 0.18 * al))
+		draw_circle(p, 7, detail_col)
+		draw_circle(p, 4, body_col)
 		return
 
 	var squad_selected = u.squad != null and u.squad.selected
 	if squad_selected:
-		draw_arc(p + Vector2(0, 4), int(12 * S), 0, TAU, 24, Color(1.0, 0.95, 0.2, 0.50 * al), 1.5)
+		draw_circle(p, 14, Color(1.0, 0.95, 0.2, 0.30 * al))
 
-	var sh_pts = PackedVector2Array()
-	for i in range(16):
-		var a = float(i) / 16.0 * TAU
-		sh_pts.append(p + Vector2(0, int(9 * S)) + Vector2(cos(a) * int(7 * S), sin(a) * int(3 * S)))
-	draw_colored_polygon(sh_pts, Color(0, 0, 0, 0.22 * al))
+	draw_circle(p + Vector2(2, 3), 9, Color(0, 0, 0, 0.22 * al))
 
 	if neutral:
-		draw_rect(Rect2(p + Vector2(int(-5*S), int(4*S)),  Vector2(int(4*S), int(7*S))), armor_col)
-		draw_rect(Rect2(p + Vector2(int(1*S),  int(4*S)),  Vector2(int(4*S), int(7*S))), armor_col)
-		draw_rect(Rect2(p + Vector2(int(-6*S), int(-5*S)), Vector2(int(12*S), int(10*S))), body_col)
-		draw_rect(Rect2(p + Vector2(int(-10*S),int(-5*S)), Vector2(int(4*S), int(7*S))), body_col)
-		draw_rect(Rect2(p + Vector2(int(6*S),  int(-5*S)), Vector2(int(4*S), int(7*S))), body_col)
-		draw_circle(p + Vector2(0, int(-9*S)), int(5*S), skin_col)
-		draw_line(p + Vector2(int(10*S), int(-3*S)), p + Vector2(int(10*S), int(-18*S)), Color(0.7, 0.6, 0.3, al), 2)
+		draw_circle(p, 9, body_col)
+		draw_circle(p, 5, detail_col)
+		var spear_end = p + facing * 14
+		draw_line(p - facing * 3, spear_end, Color(0.70, 0.60, 0.30, al), 2)
+		draw_circle(spear_end, 2, Color(0.78, 0.78, 0.72, al))
 	elif human:
-		draw_rect(Rect2(p + Vector2(int(-4*S), int(4*S)),  Vector2(int(4*S), int(6*S))), armor_col)
-		draw_rect(Rect2(p + Vector2(int(1*S),  int(4*S)),  Vector2(int(4*S), int(6*S))), armor_col)
-		draw_rect(Rect2(p + Vector2(int(-5*S), int(-4*S)), Vector2(int(10*S), int(9*S))), body_col)
-		draw_rect(Rect2(p + Vector2(int(-5*S), int(-4*S)), Vector2(int(10*S), int(5*S))), armor_col)
-		draw_rect(Rect2(p + Vector2(int(-9*S), int(-4*S)), Vector2(int(4*S), int(7*S))), armor_col)
-		draw_rect(Rect2(p + Vector2(int(5*S),  int(-4*S)), Vector2(int(4*S), int(7*S))), armor_col)
-		draw_line(p + Vector2(int(9*S), int(-2*S)),  p + Vector2(int(9*S),  int(-16*S)), Color(0.8, 0.8, 0.85, al), 2)
-		draw_line(p + Vector2(int(6*S), int(-9*S)),  p + Vector2(int(12*S), int(-9*S)),  Color(0.7, 0.55, 0.3, al), 2)
-		draw_circle(p + Vector2(0, int(-8*S)), int(5*S), skin_col)
-		draw_arc(p   + Vector2(0, int(-8*S)), int(5*S), PI, 2*PI, 16, armor_col, int(4*S))
-		draw_rect(Rect2(p + Vector2(int(-6*S), int(-15*S)), Vector2(int(12*S), int(4*S))), armor_col)
-		draw_line(p + Vector2(int(-3*S), int(-9*S)), p + Vector2(int(3*S), int(-9*S)), Color(0.1, 0.1, 0.15, al), 1)
+		draw_circle(p, 9, body_col)
+		var shield_pos = p + facing.rotated(PI * 0.5) * 5 - facing * 2
+		draw_circle(shield_pos, 5, rim_col)
+		draw_circle(shield_pos, 3, detail_col)
+		var sword_end = p + facing * 13
+		draw_line(p + facing * 4, sword_end, Color(0.82, 0.82, 0.88, al), 2)
+		draw_circle(sword_end, 1, Color(0.72, 0.72, 0.78, al))
+		draw_arc(p, 9, 0, TAU, 20, rim_col, 2)
 	else:
-		draw_rect(Rect2(p + Vector2(int(-7*S), int(4*S)),  Vector2(int(5*S), int(8*S))), Color(0.32, 0.22, 0.10, al))
-		draw_rect(Rect2(p + Vector2(int(2*S),  int(4*S)),  Vector2(int(5*S), int(8*S))), Color(0.32, 0.22, 0.10, al))
-		draw_rect(Rect2(p + Vector2(int(-8*S), int(-6*S)), Vector2(int(16*S), int(11*S))), body_col)
-		draw_rect(Rect2(p + Vector2(int(-8*S), int(-6*S)), Vector2(int(16*S), int(5*S))), armor_col)
-		draw_rect(Rect2(p + Vector2(int(-13*S),int(-6*S)), Vector2(int(5*S), int(9*S))), body_col)
-		draw_rect(Rect2(p + Vector2(int(8*S),  int(-6*S)), Vector2(int(5*S), int(9*S))), body_col)
-		draw_line(p + Vector2(int(13*S), int(-14*S)), p + Vector2(int(13*S), int(3*S)),   Color(0.55, 0.45, 0.35, al), 3)
-		draw_arc(p  + Vector2(int(17*S), int(-14*S)), int(6*S), PI*0.5, PI*1.5, 8, Color(0.72, 0.67, 0.6, al), int(4*S))
-		draw_circle(p + Vector2(0, int(-11*S)), int(7*S), skin_col)
-		draw_line(p + Vector2(int(-4*S), int(-7*S)), p + Vector2(int(-7*S), int(-2*S)), Color(0.9, 0.85, 0.7, al), 2)
-		draw_line(p + Vector2(int(4*S),  int(-7*S)), p + Vector2(int(7*S),  int(-2*S)), Color(0.9, 0.85, 0.7, al), 2)
-		draw_line(p + Vector2(int(-5*S), int(-12*S)), p + Vector2(int(-2*S), int(-12*S)), Color(0.8, 0.1, 0.1, al), 2)
-		draw_line(p + Vector2(int(2*S),  int(-12*S)), p + Vector2(int(5*S),  int(-12*S)), Color(0.8, 0.1, 0.1, al), 2)
-		draw_rect(Rect2(p + Vector2(int(-8*S), int(-19*S)), Vector2(int(16*S), int(4*S))), armor_col)
-		draw_line(p + Vector2(int(-7*S), int(-18*S)), p + Vector2(int(-12*S), int(-27*S)), Color(0.85, 0.8, 0.65, al), 3)
-		draw_line(p + Vector2(int(7*S),  int(-18*S)), p + Vector2(int(12*S),  int(-27*S)), Color(0.85, 0.8, 0.65, al), 3)
+		draw_circle(p, 10, body_col)
+		var axe_end = p + facing * 14
+		draw_line(p + facing * 3, axe_end, Color(0.55, 0.45, 0.30, al), 3)
+		draw_arc(axe_end, 5, facing.angle() - PI * 0.4, facing.angle() + PI * 0.4, 8, rim_col, 4)
+		draw_arc(p, 10, 0, TAU, 20, rim_col, 2)
 
-	if u.hp < u.max_hp or u.state == "combat":
-		var bw = int(22 * S)
-		var bp = p + Vector2(-bw / 2, int(-26 * S))
-		draw_rect(Rect2(bp, Vector2(bw, 3)), Color(0.2, 0.0, 0.0, al))
+	if u.hp < u.max_hp or u.state == "combat" or u.state == "approach":
+		var bw = 18
+		var bp = p + Vector2(-bw / 2, -16)
+		draw_rect(Rect2(bp, Vector2(bw, 3)), Color(0.15, 0.0, 0.0, al))
 		var pct = float(u.hp) / float(u.max_hp)
 		var hc  = Color(0.1, 0.9, 0.1, al) if pct > 0.5 else (Color(0.9, 0.9, 0.1, al) if pct > 0.25 else Color(0.9, 0.1, 0.1, al))
 		draw_rect(Rect2(bp, Vector2(int(bw * pct), 3)), hc)
