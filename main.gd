@@ -663,11 +663,15 @@ func _process_node_capture(delta):
 			continue
 
 		if not humans_here and not orcs_here:
-			if n.capture_progress > 0.0 and n.capture_progress < 1.0 and n.capture_owner != n.capturing_race:
-				n.capture_progress = maxf(0.0, n.capture_progress - delta / CAPTURE_REVERSE)
-				if n.capture_progress <= 0.0:
-					n.capture_owner  = ""
-					n.capturing_race = ""
+			if n.capture_progress > 0.0 and n.capture_progress < 1.0:
+				if n.capture_owner != "" and n.capturing_race != n.capture_owner:
+					n.capture_progress = minf(1.0, n.capture_progress + delta / CAPTURE_REVERSE)
+					if n.capture_progress >= 1.0:
+						n.capturing_race = n.capture_owner
+				elif n.capture_owner == "" and n.capturing_race != "":
+					n.capture_progress = maxf(0.0, n.capture_progress - delta / CAPTURE_REVERSE)
+					if n.capture_progress <= 0.0:
+						n.capturing_race = ""
 			continue
 
 		var attacker = PLAYER_RACE if humans_here else AI_RACE
